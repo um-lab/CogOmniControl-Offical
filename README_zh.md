@@ -1,4 +1,4 @@
-# CogOmniControl(内部版本)
+# CogOmniControl
 
 CogOmniControl是一个基于Wan2.2的多模态控制模型，结合CogVLM以及CogOmniDiT实现
 
