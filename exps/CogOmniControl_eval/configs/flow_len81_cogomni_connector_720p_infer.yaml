@@ -1,0 +1,44 @@
+ulysses_degree: 2
+boundary: 0.9
+# sample_size: [640, 640]
+sample_size: [1280, 720]
+# sample_size: [256, 256]
+# sample_size: [1280, 1280]
+model_name: "weights/Wan2.2-T2V-A14B"
+config_path: "config/wan2.2/wan_cogomni_14b_civitai.yaml"
+shift: 5
+sampler_name: "Flow"
+guidance_scale: 2.0
+seed: 43
+GPU_memory_mode: "sequential_cpu_offload"
+# GPU_memory_mode: "model_full_load"
+video_length: 81
+# video_length: 33
+# for lora loading
+num_inference_steps: 8
+llm_lora_path: "weights/CogVLM"
+lora_paths: [
+    # distill lora for low noise model
+    "weights/loras/Lightx2v/lightx2v_T2V_14B_cfg_step_distill_v2_lora_rank256_bf16.safetensors",
+    "weights/low_noise/Wan2_2-CogOmni_low_lora_connector_14B.safetensors"
+    
+
+]
+lora_high_paths: [
+    # distill lora for high noise model
+    "weights/loras/Lightx2v/lightx2v_T2V_14B_cfg_step_distill_v2_lora_rank256_bf16.safetensors",
+    "weights/high_noise/Wan2_2-CogOmni_high_lora_connector_14B.safetensors"
+]
+lora_weights: [1.0, 1.0]
+lora_high_weights: [1.0, 1.0]
+
+connector_paths: [
+    # you need to download first
+    "weights/low_noise/Wan2_2-CogOmni_low_lora_connector_14B.safetensors"
+
+]
+
+connector_high_paths: [
+    # you need to download first
+    "weights/high_noise/Wan2_2-CogOmni_high_lora_connector_14B.safetensors"
+]

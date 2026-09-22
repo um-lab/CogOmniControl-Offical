@@ -1,0 +1,15 @@
+ulysses_degree: 8
+boundary: 0.9
+sample_size: [640, 640]
+model_name: "models/Diffusion_Transformer/Wan2.2-T2V-A14B"
+config_path: "config/wan2.2/wan_cogomni_14b_civitai.yaml"
+shift: 5
+sampler_name: "Flow"
+guidance_scale: 2.0
+seed: 43
+GPU_memory_mode: "sequential_cpu_offload"
+video_length: 49
+# for lora loading
+num_inference_steps: 8
+lora_weights: [1.0, 1.0]
+lora_high_weights: [1.0, 1.0]

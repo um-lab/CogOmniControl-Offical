@@ -1,0 +1,173 @@
+import signal
+import psutil
+import multiprocessing as mp
+import time
+from typing import List, Callable, Any, Optional, Union, cast
+from multiprocessing.process import BaseProcess
+import atexit
+import contextlib
+
+from fastvideo.v1.worker.executor import Executor
+from fastvideo.v1.fastvideo_args import FastVideoArgs
+from fastvideo.v1.logger import init_logger
+from fastvideo.v1.worker.gpu_worker import run_worker_process
+from fastvideo.v1.pipelines.pipeline_batch_info import ForwardBatch
+
+logger = init_logger(__name__)
+
+
+class MultiprocExecutor(Executor):
+
+    def _init_executor(self) -> None:
+        # The child processes will send SIGUSR1 when unrecoverable
+        # errors happen.
+        def sigusr1_handler(signum, frame):
+            logger.fatal(
+                "MulitprocExecutor got fatal signal from worker processes, "
+                "shutting down. See stack trace above for root cause issue.")
+            # Propagate error up to parent process.
+            parent_process = psutil.Process().parent()
+            parent_process.send_signal(signal.SIGUSR1)
+            self.shutdown()
+
+        # Handle Ctrl+C and regular termination
+        def sigint_handler(signum, frame):
+            logger.info("Received interrupt signal, shutting down workers...")
+            self.shutdown()
+
+        signal.signal(signal.SIGUSR1, sigusr1_handler)
+        signal.signal(signal.SIGINT, sigint_handler)
+        signal.signal(signal.SIGTERM, sigint_handler)
+
+        self.world_size = self.fastvideo_args.num_gpus
+        self.shutting_down = False
+
+        # Set mp start method
+        # TODO(will): can we also use "fork" here? Using spawn here to make cuda
+        # initialization work.
+        mp.set_start_method("spawn", force=True)
+
+        self.workers: List[BaseProcess] = []
+        self.worker_pipes = []
+
+        # Create pipes and start workers
+        for rank in range(self.world_size):
+            executor_pipe, worker_pipe = mp.Pipe(duplex=True)
+            self.worker_pipes.append(executor_pipe)
+
+            worker = mp.Process(target=run_worker_process,
+                                args=(self.fastvideo_args, rank, rank,
+                                      worker_pipe))
+            worker.start()
+            self.workers.append(worker)
+        logger.info("Workers: %s", self.workers)
+
+        # Wait for all workers to be ready
+        for idx, pipe in enumerate(self.worker_pipes):
+            data = pipe.recv()
+            if data["status"] != "ready" or data["local_rank"] != idx:
+                raise RuntimeError(f"Worker {idx} failed to start")
+        logger.info("%d workers ready", self.world_size)
+
+        # Register shutdown on exit
+        atexit.register(self.shutdown)
+
+    def execute_forward(self, forward_batch: ForwardBatch,
+                        fastvideo_args: FastVideoArgs) -> ForwardBatch:
+        responses = self.collective_rpc("execute_forward",
+                                        kwargs={
+                                            "forward_batch": forward_batch,
+                                            "fastvideo_args": fastvideo_args
+                                        })
+        return cast(ForwardBatch, responses[0]["output_batch"])
+
+    def collective_rpc(self,
+                       method: Union[str, Callable],
+                       timeout: Optional[float] = None,
+                       args: tuple = (),
+                       kwargs: Optional[dict] = None) -> list[Any]:
+        kwargs = kwargs or {}
+
+        try:
+            for pipe in self.worker_pipes:
+                pipe.send({"method": method, "args": args, "kwargs": kwargs})
+
+            responses = []
+            for pipe in self.worker_pipes:
+                response = pipe.recv()
+                responses.append(response)
+            return responses
+        except TimeoutError as e:
+            raise TimeoutError(f"RPC call to {method} timed out.") from e
+        except Exception as e:
+            # Re-raise any other exceptions
+            raise e
+
+    def shutdown(self) -> None:
+        """Properly shut down the executor and its workers"""
+        if hasattr(self, 'shutting_down') and self.shutting_down:
+            return  # Prevent multiple shutdown calls
+
+        logger.info("Shutting down MultiprocExecutor...")
+        self.shutting_down = True
+
+        # First try gentle termination
+        try:
+            # Send termination message to all workers
+            for pipe in self.worker_pipes:
+                with contextlib.suppress(Exception):
+                    pipe.send({"method": "shutdown", "args": (), "kwargs": {}})
+
+            # Give workers some time to exit gracefully
+            start_time = time.time()
+            while time.time() - start_time < 5.0:  # 5 seconds timeout
+                if all(not worker.is_alive() for worker in self.workers):
+                    break
+                time.sleep(0.1)
+
+            # Force terminate any remaining workers
+            for worker in self.workers:
+                if worker.is_alive():
+                    worker.terminate()
+
+            # Final timeout for terminate
+            start_time = time.time()
+            while time.time() - start_time < 2.0:  # 2 seconds timeout
+                if all(not worker.is_alive() for worker in self.workers):
+                    break
+                time.sleep(0.1)
+
+            # Kill if still alive
+            for worker in self.workers:
+                if worker.is_alive():
+                    worker.kill()
+                worker.join(timeout=1.0)
+
+        except Exception as e:
+            logger.error("Error during shutdown: %s", e)
+            # Last resort, try to kill all workers
+            for worker in self.workers:
+                with contextlib.suppress(Exception):
+                    if worker.is_alive():
+                        worker.kill()
+
+        # Clean up pipes
+        for pipe in self.worker_pipes:
+            with contextlib.suppress(Exception):
+                pipe.close()
+
+        self.workers = []
+        self.worker_pipes = []
+        logger.info("MultiprocExecutor shutdown complete")
+
+    def __del__(self):
+        """Ensure cleanup on garbage collection"""
+        self.shutdown()
+
+    def __enter__(self):
+        """Support for context manager protocol"""
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        """Ensure cleanup when exiting context"""
+        self.shutdown()

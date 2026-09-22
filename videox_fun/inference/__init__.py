@@ -1,0 +1,3 @@
+from .wan_fun_inferencer import Wan_Fun_Inferencer
+# from .cogomni_control_inferencer import CogOmniControl_Inferencer
+from .cogomni_control_connector_inferencer import CogOmniControl_Connector_Inferencer
