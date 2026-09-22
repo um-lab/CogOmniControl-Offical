@@ -1,4 +1,4 @@
-# CogOmniControl (Internal Version)
+# CogOmniControl
 
 CogOmniControl is a multimodal control model built on top of Wan2.2, implemented by combining CogVLM and CogOmniDiT.
 
